@@ -58,19 +58,29 @@ def free_vram() -> None:
 
 def load_model_bundle(
     *,
-    model_path: Path,
+    model_source: str | Path,
     base_model: str,
     max_seq_length: int,
     cfg: DictConfig,
 ):
-    from .evaluate import load_model_for_eval
+    from .evaluate import _load_with_unsloth, load_model_for_eval
 
-    return load_model_for_eval(
-        model_path=model_path,
-        base_model=base_model,
+    if isinstance(model_source, Path):
+        return load_model_for_eval(
+            model_path=model_source,
+            base_model=base_model,
+            max_seq_length=max_seq_length,
+            cfg=cfg,
+        )
+
+    model, tokenizer, mode = _load_with_unsloth(
+        str(model_source),
         max_seq_length=max_seq_length,
-        cfg=cfg,
+        model_hint=base_model,
+        preferred_backend=str(cfg.model.get("backend", "auto")),
+        local_files_only=bool(cfg.model.get("local_files_only", False)),
     )
+    return model, tokenizer, mode
 
 
 def slugify(text: str) -> str:
@@ -95,6 +105,28 @@ def resolve_model_path(output_dir: Path, checkpoint: str) -> Path:
     if not candidate.exists():
         raise FileNotFoundError(f"Checkpoint not found: {candidate}")
     return candidate
+
+
+def resolve_model_source(
+    *,
+    cfg: DictConfig,
+    checkpoint: str,
+    hf_repo: str | None,
+) -> tuple[str | Path, str]:
+    if hf_repo is not None:
+        repo_id = str(hf_repo).strip()
+        if not repo_id:
+            raise ValueError("Received an empty --hf-repo value.")
+        checkpoint_text = str(checkpoint).strip().lower()
+        if checkpoint_text not in {"", "final"}:
+            raise ValueError(
+                "When --hf-repo is used, only --checkpoint final is currently supported."
+            )
+        return repo_id, repo_id.split("/")[-1]
+
+    training_output_dir = resolve_workspace_path(cfg.training.output_dir)
+    model_path = resolve_model_path(training_output_dir, checkpoint=checkpoint)
+    return model_path, str(model_path)
 
 
 def load_eval_rows(input_csv: Path) -> list[dict[str, str]]:
@@ -521,6 +553,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--input-csv", required=True, help="CSV path with source_text and item_id/item_number.")
     parser.add_argument(
+        "--hf-repo",
+        action="append",
+        default=None,
+        help=(
+            "Optional HF repo IDs aligned with --config-name order. "
+            "When provided, the corresponding model is loaded from Hub instead of local training.output_dir."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         default="artifacts/csv_inference",
         help="Output directory for per-model and merged CSV files.",
@@ -563,6 +604,12 @@ def main() -> None:
     args = parse_args()
     suppress_noisy_library_logs()
 
+    hf_repos = list(args.hf_repo or [])
+    if hf_repos and len(hf_repos) != len(args.config_name):
+        raise ValueError(
+            "--hf-repo must be provided either zero times or exactly once per --config-name."
+        )
+
     input_csv = resolve_workspace_path(args.input_csv)
     output_dir = resolve_workspace_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -575,19 +622,23 @@ def main() -> None:
     merged_rows: list[dict[str, str]] = []
     seen_labels: set[str] = set()
 
-    for config_name in args.config_name:
+    for config_index, config_name in enumerate(args.config_name):
         cfg = compose_cfg(config_path=args.config_path, config_name=config_name)
+        hf_repo = hf_repos[config_index] if hf_repos else None
 
-        training_output_dir = resolve_workspace_path(cfg.training.output_dir)
-        model_path = resolve_model_path(training_output_dir, checkpoint=args.checkpoint)
-        model_label = slugify(str(cfg.experiment.get("name", config_name)) or config_name)
+        model_source, source_label = resolve_model_source(
+            cfg=cfg,
+            checkpoint=args.checkpoint,
+            hf_repo=hf_repo,
+        )
+        model_label = slugify(source_label if hf_repo else str(cfg.experiment.get("name", config_name)) or config_name)
         if model_label in seen_labels:
             model_label = slugify(f"{model_label}_{config_name}")
         seen_labels.add(model_label)
 
         print("=" * 80)
         print(f"config_name: {config_name}")
-        print(f"model_path: {model_path}")
+        print(f"model_source: {model_source}")
         print("=" * 80)
 
         prompt_templates = resolve_prompt_templates(cfg=cfg, prompt_override=args.prompt_template)
@@ -608,7 +659,7 @@ def main() -> None:
         model = tokenizer = None
         try:
             model, tokenizer, loader_mode = load_model_bundle(
-                model_path=model_path,
+                model_source=model_source,
                 base_model=str(cfg.model.pretrained_model_name_or_path),
                 max_seq_length=int(cfg.model.max_seq_length),
                 cfg=cfg,
