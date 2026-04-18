@@ -284,8 +284,11 @@ def build_generation_kwargs(
 
 def clean_hypothesis(text: str, response_prefix: str) -> str:
     out = (text or "").strip()
+    normalized_prefix = response_prefix.strip()
+    if normalized_prefix and normalized_prefix in out:
+        out = out.rsplit(normalized_prefix, 1)[-1].strip()
     removable_prefixes = [
-        response_prefix.strip(),
+        normalized_prefix,
         "<KO>",
         "<ko>",
         "번역:",
@@ -315,6 +318,7 @@ def generate_single(
         encoded = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
         input_ids = encoded["input_ids"].to(device)
         attention_mask = encoded["attention_mask"].to(device)
+        prompt_input_length = int(input_ids.shape[1])
 
         effective_max_new = int(max_new_tokens)
         if context_limit is not None:
@@ -338,8 +342,7 @@ def generate_single(
                 ),
             )
 
-        prompt_len = int(attention_mask.sum().item())
-        gen_ids = output_ids[0][prompt_len:]
+        gen_ids = output_ids[0][prompt_input_length:]
         hypothesis = clean_hypothesis(
             tokenizer.decode(gen_ids, skip_special_tokens=True),
             response_prefix=response_prefix,
@@ -434,6 +437,7 @@ def generate_rows(
             )
             input_ids = encoded["input_ids"].to(device)
             attention_mask = encoded["attention_mask"].to(device)
+            batch_input_length = int(input_ids.shape[1])
 
             effective_max_new = int(max_new_tokens)
             if context_limit is not None:
@@ -459,8 +463,7 @@ def generate_rows(
                 )
 
             for index, item_id in enumerate(item_ids):
-                prompt_len = int(attention_mask[index].sum().item())
-                gen_ids = output_ids[index][prompt_len:]
+                gen_ids = output_ids[index][batch_input_length:]
                 hypothesis = clean_hypothesis(
                     tokenizer.decode(gen_ids, skip_special_tokens=True),
                     response_prefix=response_prefix,
