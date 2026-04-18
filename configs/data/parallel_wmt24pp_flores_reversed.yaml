@@ -1,5 +1,5 @@
 train_datasets:
-  - path: "alwaysgood/wmt24pp-kr"
+  - path: "alwaysgood/wmt24pp-kr-reversed"
     name: null
     split: "train"
     streaming: false
@@ -7,7 +7,7 @@ train_datasets:
     trust_remote_code: false
     max_rows: null
 
-  - path: "alwaysgood/flores-kr"
+  - path: "alwaysgood/flores-kr-reversed"
     name: null
     split: "train"
     streaming: false
@@ -16,7 +16,7 @@ train_datasets:
     max_rows: null
 
 validation_datasets:
-  - path: "alwaysgood/wmt24pp-kr"
+  - path: "alwaysgood/wmt24pp-kr-reversed"
     name: null
     split: "validation"
     streaming: false
@@ -24,7 +24,7 @@ validation_datasets:
     trust_remote_code: false
     max_rows: null
 
-  - path: "alwaysgood/flores-kr"
+  - path: "alwaysgood/flores-kr-reversed"
     name: null
     split: "validation"
     streaming: false
@@ -33,10 +33,10 @@ validation_datasets:
     max_rows: null
 
 text_fields:
-  - "content"
-  - "text"
   - "source_text"
   - "target_text"
+  - "text"
+  - "content"
 
 id_column: "id"
 source_column: "dataset"

@@ -1,0 +1,6 @@
+templates:
+  - "You are a professional {src_lang_name} ({src_locale}) to {tgt_lang_name} ({tgt_locale}) translator. Your goal is to accurately convey the meaning and nuances of the original {src_lang_name} text while adhering to {tgt_lang_name} grammar, vocabulary, and cultural sensitivities. Produce only the {tgt_lang_name} translation, without any additional explanations or commentary. Please translate the following {src_lang_name} text into {tgt_lang_name}: {src}"
+  - "Translate the following text from {src_lang_name} to {tgt_lang_name}: {src}"
+  - "What does this sentence mean in {tgt_lang_name} from {src_lang_name}: {src}"
+  - "How do you translate this sentence into {tgt_lang_name} from {src_lang_name}: {src}"
+  - "Translate the following text to {tgt_lang_name}: {src}"

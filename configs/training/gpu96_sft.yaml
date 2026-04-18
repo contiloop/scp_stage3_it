@@ -1,0 +1,15 @@
+defaults:
+  - default
+  - _self_
+
+per_device_train_batch_size: 10
+gradient_accumulation_steps: 4
+per_device_eval_batch_size: 8
+
+group_by_length: false
+
+runtime_packing:
+  enabled: false
+  strategy: "bfd_split"
+  padding_free: true
+  max_length: ${model.max_seq_length}

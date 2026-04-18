@@ -1,5 +1,5 @@
 """
-Hydra-based CPT training entrypoint with Unsloth backend.
+Hydra-based SFT training entrypoint with Unsloth backend.
 
 Supports:
 - full-weight training
@@ -10,132 +10,24 @@ Supports:
 from __future__ import annotations
 
 import inspect
-import math
-import re
 from pathlib import Path
 from typing import Any
 
 import unsloth  # must be imported before transformers for kernel patches
 import hydra
 import torch
-from datasets import Dataset, load_from_disk
+from datasets import load_from_disk
 from omegaconf import DictConfig, OmegaConf
 from transformers.trainer_utils import get_last_checkpoint
 from trl import SFTConfig, SFTTrainer
 
 from .common import (
+    init_weave_if_enabled,
     resolve_workspace_path,
     setup_wandb_env,
     suppress_noisy_library_logs,
     to_report_to_list,
 )
-
-
-class CausalPackedCollator:
-    def __init__(self, pad_token_id: int):
-        self.pad_token_id = int(pad_token_id)
-
-    def __call__(self, features: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
-        max_len = max(len(f["input_ids"]) for f in features)
-        input_batch = []
-        label_batch = []
-
-        for feature in features:
-            input_ids = list(feature["input_ids"])
-            labels = list(feature.get("labels", feature["input_ids"]))
-            pad_len = max_len - len(input_ids)
-
-            input_batch.append(input_ids + [self.pad_token_id] * pad_len)
-            label_batch.append(labels + [-100] * pad_len)
-
-        input_tensor = torch.tensor(input_batch, dtype=torch.long)
-        label_tensor = torch.tensor(label_batch, dtype=torch.long)
-        attention_mask = (input_tensor != self.pad_token_id).long()
-
-        return {
-            "input_ids": input_tensor,
-            "labels": label_tensor,
-            "attention_mask": attention_mask,
-        }
-
-
-class LayerGradNormTrainer(SFTTrainer):
-    """
-    Log layer-wise gradient norms to W&B at logging_steps cadence.
-    """
-
-    def __init__(self, *args, grad_norm_logging_enabled: bool = False, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.grad_norm_logging_enabled = bool(grad_norm_logging_enabled)
-        self._optimizer_hook_installed = False
-        self._layer_pattern = re.compile(r"\.(\d+)\.")
-
-    def _should_log_gradient_stats(self) -> bool:
-        if not self.grad_norm_logging_enabled:
-            return False
-        logging_steps = int(getattr(self.args, "logging_steps", 0) or 0)
-        if logging_steps <= 0:
-            return False
-        return (self.state.global_step + 1) % logging_steps == 0
-
-    def _install_optimizer_hook(self) -> None:
-        if self._optimizer_hook_installed:
-            return
-        original_step = self.optimizer.step
-        trainer_ref = self
-
-        def hooked_step(*args, **kwargs):
-            if trainer_ref._should_log_gradient_stats():
-                trainer_ref._log_layer_grad_norms()
-            return original_step(*args, **kwargs)
-
-        self.optimizer.step = hooked_step
-        self._optimizer_hook_installed = True
-
-    def create_optimizer(self):
-        super().create_optimizer()
-        self._install_optimizer_hook()
-
-    def _extract_layer_idx(self, param_name: str) -> int | None:
-        match = self._layer_pattern.search(param_name)
-        if match is None:
-            return None
-        return int(match.group(1))
-
-    @torch.no_grad()
-    def _log_layer_grad_norms(self) -> None:
-        layer_squares: dict[int, float] = {}
-        total_sq = 0.0
-        grad_param_count = 0
-
-        for name, parameter in self.model.named_parameters():
-            if parameter.grad is None:
-                continue
-
-            grad_sq = float(parameter.grad.detach().float().pow(2).sum().item())
-            total_sq += grad_sq
-            grad_param_count += 1
-
-            layer_idx = self._extract_layer_idx(name)
-            if layer_idx is None:
-                continue
-            layer_squares[layer_idx] = layer_squares.get(layer_idx, 0.0) + grad_sq
-
-        payload: dict[str, float] = {
-            "grad_norm/total": math.sqrt(max(total_sq, 0.0)),
-            "grad_norm/param_count": float(grad_param_count),
-        }
-        for layer_idx in sorted(layer_squares):
-            payload[f"grad_norm/layer_{layer_idx:02d}"] = math.sqrt(max(layer_squares[layer_idx], 0.0))
-
-        try:
-            import wandb
-
-            if wandb.run is not None:
-                wandb.log(payload, commit=False)
-        except Exception:
-            # Keep training robust even if wandb import/logging fails.
-            return
 
 
 def count_params(model) -> tuple[int, int]:
@@ -232,25 +124,12 @@ def _set_if_supported(
         kwargs[key] = value
 
 
-def contains_cross_sample_packing(dataset: Dataset, probe_rows: int = 64) -> bool:
-    if "seq_lengths" not in dataset.column_names:
-        return False
-
-    limit = min(len(dataset), probe_rows)
-    for idx in range(limit):
-        row = dataset[idx]
-        seq_lengths = row.get("seq_lengths")
-        if isinstance(seq_lengths, list) and len(seq_lengths) > 1:
-            return True
-    return False
-
-
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     suppress_noisy_library_logs()
 
     print("=" * 80)
-    print("CPT Train Config")
+    print("SFT Train Config")
     print("=" * 80)
     print(OmegaConf.to_yaml(cfg, resolve=True))
 
@@ -263,6 +142,7 @@ def main(cfg: DictConfig) -> None:
         setup_wandb_env(cfg.logging, experiment_name=run_name, tags_override=wandb_tags)
     else:
         setup_wandb_env(cfg.logging, experiment_name=None, tags_override=wandb_tags)
+    init_weave_if_enabled(cfg.logging)
 
     model_name = str(cfg.model.pretrained_model_name_or_path)
     finetune_method = str(cfg.finetune.method).lower()
@@ -305,7 +185,10 @@ def main(cfg: DictConfig) -> None:
             f"errors:\n{joined}"
         )
 
-    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+    pad_to_eos = bool(cfg.training.get("pad_to_eos", True))
+    if pad_to_eos and tokenizer.eos_token_id is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+    elif tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
     if bool(cfg.training.get("freeze_embeddings", False)):
@@ -351,17 +234,20 @@ def main(cfg: DictConfig) -> None:
             "Re-run preprocess with preprocessing.packing.enabled=false."
         )
 
-    if bool(cfg.training.prevent_cross_sample_attention) and not use_runtime_packing:
-        if contains_cross_sample_packing(train_dataset):
-            raise RuntimeError(
-                "Detected packed rows with multiple samples (`seq_lengths` length > 1). "
-                "Set preprocessing.packing.enabled=false for contamination-safe CPT."
-            )
-        if eval_dataset is not None and contains_cross_sample_packing(eval_dataset):
-            raise RuntimeError(
-                "Detected packed eval rows with multiple samples (`seq_lengths` length > 1). "
-                "Set preprocessing.packing.enabled=false for contamination-safe CPT."
-            )
+    # Drop metadata columns that are not consumed by the trainer. This avoids
+    # per-batch pickle/serialization of large string fields in DataLoader workers.
+    if use_runtime_packing:
+        keep_columns = {"text"}
+    else:
+        keep_columns = {"input_ids", "completion_mask"}
+
+    def _prune_columns(ds):
+        drop = [c for c in ds.column_names if c not in keep_columns]
+        return ds.remove_columns(drop) if drop else ds
+
+    train_dataset = _prune_columns(train_dataset)
+    if eval_dataset is not None:
+        eval_dataset = _prune_columns(eval_dataset)
 
     output_dir = resolve_workspace_path(cfg.training.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -406,6 +292,26 @@ def main(cfg: DictConfig) -> None:
         "overwrite_output_dir",
         bool(cfg.training.overwrite_output_dir),
     )
+    _set_if_supported(
+        sft_kwargs,
+        sft_fields,
+        "group_by_length",
+        bool(cfg.training.get("group_by_length", False)),
+    )
+    _set_if_supported(
+        sft_kwargs,
+        sft_fields,
+        "completion_only_loss",
+        bool(cfg.training.get("completion_only_loss", True)),
+    )
+    _set_if_supported(
+        sft_kwargs,
+        sft_fields,
+        "assistant_only_loss",
+        bool(cfg.training.get("assistant_only_loss", False)),
+    )
+    _set_if_supported(sft_kwargs, sft_fields, "max_length", int(cfg.model.max_seq_length))
+    _set_if_supported(sft_kwargs, sft_fields, "max_seq_length", int(cfg.model.max_seq_length))
 
     if use_runtime_packing:
         _set_if_supported(sft_kwargs, sft_fields, "dataset_text_field", "text")
@@ -438,23 +344,12 @@ def main(cfg: DictConfig) -> None:
     if base_tokenizer.eos_token_id is not None:
         base_tokenizer.eos_token = base_tokenizer.convert_ids_to_tokens(base_tokenizer.eos_token_id)
 
-    grad_norm_cfg = cfg.training.get("grad_norm_logging")
-    grad_norm_enabled = bool(grad_norm_cfg and grad_norm_cfg.get("enabled", False))
-
-    trainer = LayerGradNormTrainer(
+    trainer = SFTTrainer(
         model=model,
         args=args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset if has_eval else None,
         processing_class=base_tokenizer,
-        grad_norm_logging_enabled=grad_norm_enabled,
-        data_collator=(
-            None
-            if use_runtime_packing
-            else CausalPackedCollator(
-                pad_token_id=base_tokenizer.pad_token_id or base_tokenizer.eos_token_id
-            )
-        ),
     )
 
     resume_checkpoint = resolve_resume_checkpoint(cfg.training.resume_from_checkpoint, output_dir=output_dir)

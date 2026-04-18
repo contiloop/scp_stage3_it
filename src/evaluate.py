@@ -96,7 +96,21 @@ def compute_ppl(model, dataset, batch_size: int = 4, max_batches: int | None = N
         for start in tqdm(range(0, n, batch_size), desc="ppl"):
             batch = dataset[start : min(start + batch_size, n)]
             ids_list = [list(ids) for ids in batch["input_ids"]]
-            lbl_list = [list(lbl) for lbl in batch["labels"]]
+            if "labels" in batch:
+                lbl_list = [list(lbl) for lbl in batch["labels"]]
+            elif "completion_mask" in batch:
+                lbl_list = []
+                for ids, mask in zip(ids_list, batch["completion_mask"], strict=True):
+                    mask_list = list(mask)
+                    if len(mask_list) < len(ids):
+                        mask_list = mask_list + [0] * (len(ids) - len(mask_list))
+                    elif len(mask_list) > len(ids):
+                        mask_list = mask_list[: len(ids)]
+                    lbl_list.append(
+                        [token_id if int(is_completion) == 1 else -100 for token_id, is_completion in zip(ids, mask_list, strict=True)]
+                    )
+            else:
+                lbl_list = [list(ids) for ids in ids_list]
 
             max_len = max(
                 max(len(ids) for ids in ids_list),

@@ -25,12 +25,12 @@ eval_on_start: false
 
 dataloader_num_workers: 8
 remove_unused_columns: false
+group_by_length: false
+pad_to_eos: false
 gradient_checkpointing: ${model.gradient_checkpointing}
-prevent_cross_sample_attention: false
 freeze_embeddings: true
-
-grad_norm_logging:
-  enabled: true
+completion_only_loss: true
+assistant_only_loss: false
 
 runtime_packing:
   enabled: false

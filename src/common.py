@@ -81,6 +81,52 @@ def setup_wandb_env(
         os.environ.setdefault("WANDB_NAME", str(experiment_name))
 
 
+def init_weave_if_enabled(logging_cfg: DictConfig) -> bool:
+    """
+    Initialize Weave tracing when explicitly enabled in logging config.
+    """
+    weave_cfg = logging_cfg.get("weave") or {}
+    if not bool(weave_cfg.get("enabled", False)):
+        return False
+
+    wandb_cfg = logging_cfg.get("wandb") or {}
+    weave_project = weave_cfg.get("project") or wandb_cfg.get("project")
+    if not weave_project:
+        raise ValueError(
+            "logging.weave.enabled=true requires `logging.weave.project` or `logging.wandb.project`."
+        )
+
+    entity = wandb_cfg.get("entity")
+    weave_project_text = str(weave_project).strip()
+    if entity and "/" not in weave_project_text:
+        weave_project_text = f"{entity}/{weave_project_text}"
+
+    settings: dict[str, Any] = {}
+    if weave_cfg.get("print_call_link") is not None:
+        settings["print_call_link"] = bool(weave_cfg.get("print_call_link"))
+    if weave_cfg.get("implicitly_patch_integrations") is not None:
+        settings["implicitly_patch_integrations"] = bool(
+            weave_cfg.get("implicitly_patch_integrations")
+        )
+
+    try:
+        import weave
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Weave is enabled but could not be imported (%s). Continuing without Weave.",
+            exc,
+        )
+        return False
+
+    if settings:
+        weave.init(weave_project_text, settings=settings)
+    else:
+        weave.init(weave_project_text)
+
+    print(f"[Weave] enabled: project={weave_project_text}")
+    return True
+
+
 def suppress_noisy_library_logs() -> None:
     """
     Reduce noisy INFO logs from HF/http clients during train/preprocess/eval.

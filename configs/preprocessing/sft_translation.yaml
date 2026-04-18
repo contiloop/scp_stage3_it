@@ -1,0 +1,41 @@
+output_dir: ${experiment.processed_dir}
+overwrite_output: false
+
+task: "sft_translation"
+
+cleaning:
+  min_chars: 0
+
+split:
+  val_ratio: 0.02
+  seed: ${seed}
+
+packing:
+  enabled: false
+  strategy: "bfd_split"
+  max_length: ${model.max_seq_length}
+
+sft:
+  source_text_field: "source_text"
+  target_text_field: "target_text"
+  source_lang_field: "source_lang_iso"
+  target_lang_field: "target_lang_iso"
+  pair_field: "pair"
+
+  response_prefix: "response: "
+  max_length: ${model.max_seq_length}
+  drop_overlength: true
+  add_eos_to_target: true
+  template_seed: ${seed}
+
+  lang_name_map:
+    en: "English"
+    ko: "Korean"
+    ja: "Japanese"
+    zh: "Chinese"
+
+  lang_locale_map:
+    en: "en-US"
+    ko: "ko-KR"
+    ja: "ja-JP"
+    zh: "zh-CN"

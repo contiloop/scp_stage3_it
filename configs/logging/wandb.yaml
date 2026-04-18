@@ -4,9 +4,15 @@ report_to:
 run_name: null
 
 wandb:
-  project: "parallel-cpt"
+  project: "instruction-tuning"
   entity: null
   tags:
-    - "cpt"
+    - "sft"
     - "parallel"
   notes: ""
+
+weave:
+  enabled: false
+  project: null
+  print_call_link: false
+  implicitly_patch_integrations: false
