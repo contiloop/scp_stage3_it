@@ -24,6 +24,7 @@ from trl import SFTConfig, SFTTrainer
 from .common import (
     init_weave_if_enabled,
     resolve_workspace_path,
+    resolve_unsloth_backend_order,
     setup_wandb_env,
     suppress_noisy_library_logs,
     to_report_to_list,
@@ -160,10 +161,19 @@ def main(cfg: DictConfig) -> None:
     tokenizer = None
     backend = None
     backend_errors: list[str] = []
-    for candidate_backend, candidate_class in (
-        ("vision", FastVisionModel),
-        ("language", FastLanguageModel),
-    ):
+    backend_candidates, backend_reason = resolve_unsloth_backend_order(
+        path_or_repo=model_name,
+        preferred_backend=cfg.model.get("backend", "auto"),
+        local_files_only=bool(cfg.model.get("local_files_only", False)),
+    )
+    print(
+        f"backend preference: {backend_candidates[0]} "
+        f"(reason: {backend_reason})"
+    )
+    for candidate_backend in backend_candidates:
+        candidate_class = (
+            FastVisionModel if candidate_backend == "vision" else FastLanguageModel
+        )
         kwargs = dict(from_pretrained_kwargs)
         # Unsloth needs full_finetuning=True to avoid silently routing to LoRA mode.
         if "full_finetuning" in inspect.signature(candidate_class.from_pretrained).parameters:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import tempfile
 from pathlib import Path
 import shutil
@@ -48,6 +49,55 @@ def resolve_upload_folder(output_dir: Path, checkpoint: str) -> Path:
     if not candidate.exists():
         raise FileNotFoundError(f"Checkpoint not found: {candidate}")
     return candidate
+
+
+def _link_or_copy_file(src: Path, dst: Path) -> None:
+    try:
+        os.link(src, dst)
+    except Exception:
+        shutil.copy2(src, dst)
+
+
+def stage_upload_folder(upload_folder: Path, output_dir: Path) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
+    if upload_folder != output_dir:
+        return upload_folder, None
+
+    tmpdir = tempfile.TemporaryDirectory(
+        prefix="hf_model_upload_",
+        dir=str(output_dir.parent),
+    )
+    staged_root = Path(tmpdir.name) / output_dir.name
+    staged_root.mkdir(parents=True, exist_ok=True)
+
+    print(
+        "[INFO] Preparing final-model upload without nested checkpoint-* directories "
+        "or duplicate tokenizer/ folder."
+    )
+
+    for child in output_dir.iterdir():
+        if child.name.startswith("checkpoint-"):
+            continue
+        if child.name == "tokenizer":
+            continue
+
+        target = staged_root / child.name
+        if child.is_dir():
+            shutil.copytree(child, target, copy_function=_link_or_copy_file)
+        else:
+            _link_or_copy_file(child, target)
+
+    return staged_root, tmpdir
+
+
+def resolve_delete_patterns(upload_folder: Path, output_dir: Path) -> list[str] | None:
+    if upload_folder != output_dir:
+        return None
+    return [
+        "checkpoint-*",
+        "checkpoint-*/**",
+        "tokenizer",
+        "tokenizer/**",
+    ]
 
 
 def maybe_upload_eval_artifacts(
@@ -138,6 +188,8 @@ def main() -> None:
         raise FileNotFoundError(f"Training output dir not found: {output_dir}")
 
     upload_folder = resolve_upload_folder(output_dir, args.checkpoint)
+    upload_source, upload_tmpdir = stage_upload_folder(upload_folder, output_dir)
+    delete_patterns = resolve_delete_patterns(upload_folder, output_dir)
 
     api = HfApi()
     api.create_repo(repo_id=args.repo, repo_type="model", private=bool(args.private), exist_ok=True)
@@ -153,25 +205,30 @@ def main() -> None:
     print("Push To Hub")
     print("=" * 80)
     print(f"repo: {args.repo}")
-    print(f"source: {upload_folder}")
+    print(f"source: {upload_source}")
     print(f"private: {bool(args.private)}")
     print(f"commit: {message}")
 
-    api.upload_folder(
-        repo_id=args.repo,
-        folder_path=str(upload_folder),
-        repo_type="model",
-        commit_message=message,
-    )
-
-    if bool(args.include_eval):
-        maybe_upload_eval_artifacts(
-            api=api,
+    try:
+        api.upload_folder(
             repo_id=args.repo,
-            upload_folder=upload_folder,
-            experiment_root=experiment_root,
+            folder_path=str(upload_source),
+            repo_type="model",
             commit_message=message,
+            delete_patterns=delete_patterns,
         )
+
+        if bool(args.include_eval):
+            maybe_upload_eval_artifacts(
+                api=api,
+                repo_id=args.repo,
+                upload_folder=upload_folder,
+                experiment_root=experiment_root,
+                commit_message=message,
+            )
+    finally:
+        if upload_tmpdir is not None:
+            upload_tmpdir.cleanup()
 
     print("=" * 80)
     print("Upload Complete")

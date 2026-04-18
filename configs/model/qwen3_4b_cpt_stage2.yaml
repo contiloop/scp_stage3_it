@@ -1,5 +1,6 @@
 pretrained_model_name_or_path: "alwaysgood/QWEN3-4B-CPT-stage2"
 tokenizer_name_or_path: null
+backend: "auto"
 trust_remote_code: true
 local_files_only: false
 

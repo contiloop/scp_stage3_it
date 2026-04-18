@@ -25,7 +25,11 @@ from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-from .common import resolve_workspace_path, suppress_noisy_library_logs
+from .common import (
+    resolve_unsloth_backend_order,
+    resolve_workspace_path,
+    suppress_noisy_library_logs,
+)
 
 BENCHMARK_TASKS = "mmlu,hellaswag,arc_easy,arc_challenge,winogrande"
 KOREAN_BENCHMARK_TASKS = "kmmlu,kobest_boolq,kobest_copa,kobest_hellaswag"
@@ -51,14 +55,24 @@ def _load_with_unsloth(
     max_seq_length: int,
     model_hint: str,
     full_finetuning: bool = True,
+    preferred_backend: str = "auto",
+    local_files_only: bool = False,
 ):
     from unsloth import FastLanguageModel, FastVisionModel
 
     errors: list[str] = []
-    for mode, model_class in (
-        ("FastVisionModel", FastVisionModel),
-        ("FastLanguageModel", FastLanguageModel),
-    ):
+    backend_candidates, backend_reason = resolve_unsloth_backend_order(
+        path_or_repo=path_or_repo,
+        preferred_backend=preferred_backend,
+        local_files_only=local_files_only,
+    )
+    print(
+        f"backend preference: {backend_candidates[0]} "
+        f"(reason: {backend_reason})"
+    )
+    for backend in backend_candidates:
+        mode = "FastVisionModel" if backend == "vision" else "FastLanguageModel"
+        model_class = FastVisionModel if backend == "vision" else FastLanguageModel
         try:
             model, tokenizer = model_class.from_pretrained(
                 model_name=path_or_repo,
@@ -258,7 +272,7 @@ def resolve_model_paths(args, cfg) -> list[Path]:
     return [default_dir]
 
 
-def load_model_for_eval(model_path: Path, base_model: str, max_seq_length: int):
+def load_model_for_eval(model_path: Path, base_model: str, max_seq_length: int, cfg):
     adapter_cfg = model_path / "adapter_config.json"
 
     if adapter_cfg.exists():
@@ -269,6 +283,8 @@ def load_model_for_eval(model_path: Path, base_model: str, max_seq_length: int):
             max_seq_length=max_seq_length,
             model_hint=base_model,
             full_finetuning=False,
+            preferred_backend=str(cfg.model.get("backend", "auto")),
+            local_files_only=bool(cfg.model.get("local_files_only", False)),
         )
         model = PeftModel.from_pretrained(base, str(model_path))
         return model, tokenizer, f"{mode}+PEFT"
@@ -277,6 +293,8 @@ def load_model_for_eval(model_path: Path, base_model: str, max_seq_length: int):
         str(model_path),
         max_seq_length=max_seq_length,
         model_hint=base_model,
+        preferred_backend=str(cfg.model.get("backend", "auto")),
+        local_files_only=bool(cfg.model.get("local_files_only", False)),
     )
     return model, tokenizer, mode
 
@@ -293,6 +311,8 @@ def compute_base_ppl(val_ds, args, cfg) -> dict[str, Any]:
         base_model,
         max_seq_length=max_seq_length,
         model_hint=base_model,
+        preferred_backend=str(cfg.model.get("backend", "auto")),
+        local_files_only=bool(cfg.model.get("local_files_only", False)),
     )
     print(f"loader(base): {mode}")
     ppl_metrics = compute_ppl(model, val_ds, batch_size=args.batch_size, max_batches=args.max_batches)
@@ -313,7 +333,12 @@ def evaluate_single(model_path: Path, val_ds, args, cfg, eval_out_dir: Path, bas
 
     ppl_metrics = None
     if not args.benchmarks_only:
-        model, _tokenizer, mode = load_model_for_eval(model_path, base_model=base_model, max_seq_length=max_seq_length)
+        model, _tokenizer, mode = load_model_for_eval(
+            model_path,
+            base_model=base_model,
+            max_seq_length=max_seq_length,
+            cfg=cfg,
+        )
         print(f"loader: {mode}")
 
         ppl_metrics = compute_ppl(model, val_ds, batch_size=args.batch_size, max_batches=args.max_batches)

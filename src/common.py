@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import logging
 from pathlib import Path
@@ -9,13 +10,215 @@ import torch
 from omegaconf import DictConfig, ListConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+UNSLOTH_BACKEND_AUTO = "auto"
+UNSLOTH_BACKEND_VISION = "vision"
+UNSLOTH_BACKEND_LANGUAGE = "language"
+UNSLOTH_BACKENDS = {
+    UNSLOTH_BACKEND_AUTO,
+    UNSLOTH_BACKEND_VISION,
+    UNSLOTH_BACKEND_LANGUAGE,
+}
 
+_MULTIMODAL_MODEL_TYPES = {
+    "gemma3",
+    "gemma3n",
+    "gemma4",
+    "idefics",
+    "idefics2",
+    "idefics3",
+    "llava",
+    "mllama",
+    "paligemma",
+    "qwen2vl",
+    "qwen25vl",
+    "qwen3vl",
+}
 
 def resolve_workspace_path(path_like: str | Path) -> Path:
     path = Path(str(path_like))
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def normalize_unsloth_backend(value: Any) -> str:
+    text = str(value).strip().lower() if value is not None else UNSLOTH_BACKEND_AUTO
+    aliases = {
+        "": UNSLOTH_BACKEND_AUTO,
+        "auto": UNSLOTH_BACKEND_AUTO,
+        "text": UNSLOTH_BACKEND_LANGUAGE,
+        "language": UNSLOTH_BACKEND_LANGUAGE,
+        "llm": UNSLOTH_BACKEND_LANGUAGE,
+        "vision": UNSLOTH_BACKEND_VISION,
+        "vlm": UNSLOTH_BACKEND_VISION,
+    }
+    normalized = aliases.get(text, text)
+    if normalized not in UNSLOTH_BACKENDS:
+        raise ValueError(
+            f"Unsupported model backend '{value}'. Expected one of: "
+            f"{sorted(UNSLOTH_BACKENDS)}"
+        )
+    return normalized
+
+
+def _load_json_if_exists(path: Path) -> dict[str, Any] | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _normalize_model_type(model_type: Any) -> str:
+    return str(model_type).strip().lower().replace("-", "").replace("_", "").replace(".", "")
+
+
+def _is_multimodal_config(config: dict[str, Any] | None) -> bool:
+    if not isinstance(config, dict):
+        return False
+
+    if _normalize_model_type(config.get("model_type")) in _MULTIMODAL_MODEL_TYPES:
+        return True
+
+    multimodal_keys = (
+        "audio_config",
+        "audio_seq_length",
+        "feature_extractor",
+        "image_seq_length",
+        "image_token_index",
+        "mm_projector_type",
+        "video_config",
+        "video_seq_length",
+        "vision_config",
+        "vision_feature_layer",
+        "vision_tower",
+    )
+    if any(key in config for key in multimodal_keys):
+        return True
+
+    architectures = " ".join(str(name) for name in config.get("architectures") or [])
+    if "ImageTextToText" in architectures or "ConditionalGeneration" in architectures:
+        model_type = _normalize_model_type(config.get("model_type"))
+        if model_type.startswith("gemma") or model_type in _MULTIMODAL_MODEL_TYPES:
+            return True
+
+    return False
+
+
+def _is_multimodal_processor_config(config: dict[str, Any] | None) -> bool:
+    if not isinstance(config, dict):
+        return False
+
+    if any(key in config for key in ("image_processor", "video_processor", "feature_extractor")):
+        return True
+
+    processor_class = str(config.get("processor_class", "")).strip().lower()
+    if processor_class and processor_class.endswith("processor"):
+        return True
+
+    return False
+
+
+def _detect_backend_from_repo_files(
+    repo_id: str,
+    local_files_only: bool,
+) -> tuple[str, str] | None:
+    try:
+        from huggingface_hub import hf_hub_download
+    except Exception:
+        return None
+
+    config_data = None
+    processor_data = None
+    preprocessor_data = None
+
+    for filename, target in (
+        ("config.json", "config"),
+        ("processor_config.json", "processor"),
+        ("preprocessor_config.json", "preprocessor"),
+    ):
+        try:
+            downloaded = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                repo_type="model",
+                local_files_only=bool(local_files_only),
+            )
+        except Exception:
+            continue
+
+        loaded = _load_json_if_exists(Path(downloaded))
+        if target == "config":
+            config_data = loaded
+        elif target == "processor":
+            processor_data = loaded
+        else:
+            preprocessor_data = loaded
+
+    if _is_multimodal_config(config_data):
+        return UNSLOTH_BACKEND_VISION, "remote config indicates multimodal model"
+    if _is_multimodal_processor_config(processor_data):
+        return UNSLOTH_BACKEND_VISION, "remote processor_config indicates multimodal model"
+    if _is_multimodal_processor_config(preprocessor_data):
+        return UNSLOTH_BACKEND_VISION, "remote preprocessor_config indicates multimodal model"
+
+    if any(item is not None for item in (config_data, processor_data, preprocessor_data)):
+        return UNSLOTH_BACKEND_LANGUAGE, "remote metadata indicates text-only model"
+
+    return None
+
+
+def resolve_unsloth_backend(
+    path_or_repo: str | Path,
+    preferred_backend: Any = None,
+    local_files_only: bool = False,
+) -> tuple[str, str]:
+    requested = normalize_unsloth_backend(preferred_backend)
+    if requested != UNSLOTH_BACKEND_AUTO:
+        return requested, f"config backend={requested}"
+
+    candidate = Path(str(path_or_repo))
+    if candidate.exists():
+        local_dir = candidate if candidate.is_dir() else candidate.parent
+        config_data = _load_json_if_exists(local_dir / "config.json")
+        if _is_multimodal_config(config_data):
+            return UNSLOTH_BACKEND_VISION, "local config indicates multimodal model"
+
+        processor_data = _load_json_if_exists(local_dir / "processor_config.json")
+        if _is_multimodal_processor_config(processor_data):
+            return UNSLOTH_BACKEND_VISION, "local processor_config indicates multimodal model"
+
+        preprocessor_data = _load_json_if_exists(local_dir / "preprocessor_config.json")
+        if _is_multimodal_processor_config(preprocessor_data):
+            return UNSLOTH_BACKEND_VISION, "local preprocessor_config indicates multimodal model"
+
+    remote_detected = _detect_backend_from_repo_files(
+        repo_id=str(path_or_repo),
+        local_files_only=bool(local_files_only),
+    )
+    if remote_detected is not None:
+        return remote_detected
+
+    return UNSLOTH_BACKEND_LANGUAGE, "metadata unavailable; default text backend"
+
+
+def resolve_unsloth_backend_order(
+    path_or_repo: str | Path,
+    preferred_backend: Any = None,
+    local_files_only: bool = False,
+) -> tuple[list[str], str]:
+    primary, reason = resolve_unsloth_backend(
+        path_or_repo=path_or_repo,
+        preferred_backend=preferred_backend,
+        local_files_only=local_files_only,
+    )
+    fallback = (
+        UNSLOTH_BACKEND_LANGUAGE
+        if primary == UNSLOTH_BACKEND_VISION
+        else UNSLOTH_BACKEND_VISION
+    )
+    return [primary, fallback], reason
 
 
 def to_report_to_list(value: Any) -> list[str]:
