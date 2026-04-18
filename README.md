@@ -33,10 +33,20 @@ This repo is configured for these CPT-stage2 base checkpoints:
   - `configs/training/gpu96_sft.yaml`
   - `configs/logging/wandb.yaml`
 
-## Setup
+## Quick Start
+
+Fresh start:
 
 ```bash
+git clone https://github.com/contiloop/scp_stage3_it.git
+cd scp_stage3_it
 make set
+
+# required for pulling private base/data repos and for push-to-hub
+python -c "import os; from huggingface_hub import login; login(token=os.environ['HF_TOKEN'])"
+
+# optional
+wandb login
 ```
 
 `make set` now does:
@@ -46,6 +56,11 @@ make set
 - optional installs with status print:
   - `xformers_install_ok=true|false`
   - `weave_install_ok=true|false`
+
+Notes:
+
+- Use your own Hugging Face token via `HF_TOKEN`. Do not hardcode tokens in this repo.
+- The old stage1 flow used `scp_stage1_cpt`; for this repo, use `scp_stage3_it` and the SFT configs below.
 
 ## Run
 
@@ -72,6 +87,12 @@ make preprocess config=sft_gemma4_cpt_stage2
 make train config=sft_gemma4_cpt_stage2
 ```
 
+If you want to inspect the fully resolved Hydra config before running:
+
+```bash
+make show-config config=sft_qwen3_4b_cpt_stage2
+```
+
 ## Weights & Biases
 
 - default project: `instruction-tuning`
@@ -82,6 +103,46 @@ Enable Weave for a run:
 
 ```bash
 make train config=sft_qwen3_4b_cpt_stage2 ovr="logging.weave.enabled=true"
+```
+
+## Push To HF
+
+After training, upload the final output dir or a checkpoint to Hugging Face Hub:
+
+```bash
+# final merged output dir
+make push-to-hub \
+  config=sft_qwen3_4b_cpt_stage2 \
+  HF_REPO=your-name/qwen3-4b-cpt-stage2-it
+
+# latest checkpoint-* under training.output_dir
+make push-to-hub \
+  config=sft_qwen3_4b_cpt_stage2 \
+  HF_REPO=your-name/qwen3-4b-cpt-stage2-it \
+  CKPT=latest
+
+# specific checkpoint and private repo
+make push-to-hub \
+  config=sft_qwen3_4b_cpt_stage2 \
+  HF_REPO=your-name/qwen3-4b-cpt-stage2-it \
+  CKPT=checkpoint-1000 \
+  HF_PRIVATE=true
+```
+
+Behavior:
+
+- `HF_REPO` is required, e.g. `your-name/model-name`
+- `CKPT=final` is the default
+- `CKPT=latest` uploads the newest `checkpoint-*` directory
+- matching eval artifacts under `artifacts/.../eval` are uploaded automatically by default
+- the repo is created automatically if it does not exist
+
+Useful model-specific examples:
+
+```bash
+make push-to-hub config=sft_qwen3_4b_cpt_stage2 HF_REPO=your-name/qwen3-4b-cpt-stage2-it
+make push-to-hub config=sft_qwen3_5_4b_cpt_half_lr_stage2 HF_REPO=your-name/qwen3.5-4b-cpt-half-lr-it
+make push-to-hub config=sft_gemma4_cpt_stage2 HF_REPO=your-name/gemma4-cpt-stage2-it
 ```
 
 ## Notes
