@@ -93,6 +93,16 @@ If you want to inspect the fully resolved Hydra config before running:
 make show-config config=sft_qwen3_4b_cpt_stage2
 ```
 
+Cleanup example:
+
+```bash
+# gemma4-CPT-stage2 artifacts
+rm -rf artifacts/sft_gemma4_cpt_stage2
+
+# shared processed data for all SFT configs in this repo
+rm -rf data/processed/sft_parallel_reversed
+```
+
 ## Weights & Biases
 
 - default project: `instruction-tuning`
