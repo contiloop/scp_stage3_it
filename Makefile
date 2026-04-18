@@ -52,13 +52,13 @@ verify-cuda-kernels:
 	fi
 
 preprocess:
-	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.preprocess --config-path configs --config-name $(config) $(ovr))
+	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.preprocess --config-name $(config) $(ovr))
 
 train:
-	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.train --config-path configs --config-name $(config) $(ovr))
+	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.train --config-name $(config) $(ovr))
 
 train-resume:
-	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.train --config-path configs --config-name $(config) training.resume_from_checkpoint=auto $(ovr))
+	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.train --config-name $(config) training.resume_from_checkpoint=auto $(ovr))
 
 eval:
 	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.evaluate --config-path configs --config-name $(eval_config) --limit $(limit))
@@ -73,7 +73,7 @@ eval-benchmarks-both:
 	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.evaluate --config-path configs --config-name $(eval_config) --benchmarks_only --bench_target both --limit $(limit))
 
 show-config:
-	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.train --config-path configs --config-name $(config) $(ovr) --cfg job)
+	@$(call WITH_TORCH_LIB,$(PYTHON) -m src.train --config-name $(config) $(ovr) --cfg job)
 
 push-to-hub:
 	@if [ -z "$(HF_REPO)" ]; then echo "HF_REPO is required. Example: make push-to-hub HF_REPO=your-name/your-model"; exit 1; fi
