@@ -692,7 +692,7 @@ def main() -> None:
                 sort_by_input_length=not bool(args.no_sort_by_input_length),
             )
 
-            per_model_path = output_dir / f"{model_label}__{slugify(config_name)}.csv"
+            per_model_path = output_dir / f"{model_label}.csv"
             write_csv(
                 path=per_model_path,
                 rows=model_rows,
