@@ -1,0 +1,35 @@
+defaults:
+  - data: parallel_wmt24pp_flores_reversed
+  - prompts: translation_dynamic_5
+  - model: gemma4_st2
+  - finetune: full
+  - preprocessing: sft_translation
+  - training: gpu96_sft
+  - evaluation: gpu96
+  - logging: wandb
+  - _self_
+
+seed: 42
+
+experiment:
+  name: "sft-gemma4-st3-reversed"
+  output_root: "artifacts/sft_gemma4_st3"
+  processed_dir: "data/processed/sft_parallel_reversed_gemma4_st3"
+
+training:
+  freeze_embeddings: false
+
+logging:
+  wandb:
+    project: "instruction-tuning"
+    tags:
+      - "sft"
+      - "parallel"
+      - "gemma4-st3"
+
+hydra:
+  run:
+    dir: ${experiment.output_root}/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ${experiment.output_root}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}

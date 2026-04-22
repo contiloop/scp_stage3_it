@@ -1,0 +1,17 @@
+pretrained_model_name_or_path: "alwaysgood/qwen35-st2"
+tokenizer_name_or_path: null
+backend: "auto"
+trust_remote_code: true
+local_files_only: false
+
+max_seq_length: 1024
+torch_dtype: "bfloat16"
+attn_implementation: null
+gradient_checkpointing: true
+use_cache: false
+
+quantization:
+  load_in_4bit: false
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: true
